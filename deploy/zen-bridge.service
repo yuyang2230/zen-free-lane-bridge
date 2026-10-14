@@ -1,0 +1,26 @@
+[Unit]
+Description=zen-bridge — OpenCode Zen free-lane bridge for AI gateways
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/zen-free-lane-bridge/bridge
+ExecStart=/usr/bin/node /opt/zen-free-lane-bridge/bridge/zen-bridge.mjs
+Restart=always
+RestartSec=5
+
+# Free-lane backpressure — see README. These bound how hard we hit Zen's
+# anonymous per-model, per-IP quota.
+Environment=PORT=8799
+Environment=HOST=0.0.0.0
+Environment=ZEN_MIN_GAP_MS=9000
+Environment=ZEN_MAX_INFLIGHT=1
+Environment=ZEN_MAX_TOTAL=2
+Environment=ZEN_QUEUE_MAX=6
+Environment=ZEN_MAX_INPUT_CHARS=120000
+Environment=ZEN_MAX_OUTPUT_TOKENS=8000
+Environment=ZEN_TRIP_COOLDOWN_MS=120000
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,19 @@
+# runtime state
+bridge.log
+zen-bridge.log
+zen-capture-log.jsonl
+zen-white-sessions.json
+
+# session pool seeds (contains harvested session ids)
+*.jsonl
+
+# node
+node_modules/
+npm-debug.log*
+
+# os / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
