@@ -95,12 +95,12 @@ curl -s http://127.0.0.1:8799/v1/chat/completions -H 'Content-Type: application/
 
 ```bash
 node -e '
-const ses = process.argv[1];                    // 例如 ses_ec6066bcfffeqgMqkTnQ61WNq1
+const ses = process.argv[1];                    // 例如 ses_000000000000AAAAAAAAAAAAAA
 if (!/^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/.test(ses)) { console.log("不是规范形状"); process.exit(1); }
 const f = BigInt("0x" + ses.slice(4, 16));      // 12 位 hex 字段
 const counter = Number((~f) & 281474976710655n & 4095n);
 console.log("counter =", counter, "(必须在 0..63 才能过门禁)");
-' ses_ec6066bcfffeqgMqkTnQ61WNq1
+' ses_000000000000AAAAAAAAAAAAAA
 ```
 
 ---
