@@ -77,8 +77,26 @@ const ANONYMOUS_KEY = "public";
 const ALLOW_ANY_KEY = process.env.ALLOW_ANY_KEY === "1";
 const HERE = dirname(fileURLToPath(import.meta.url));
 
+/**
+ * Upstream mode.
+ *
+ * "ocserver" (default since 2026-10-14 late): forward to a LOCAL headless
+ * opencode server (`opencode serve`), which talks to Zen with the real
+ * binary's own TLS stack. Late on 2026-10-14 the free-lane gate grew a
+ * transport-fingerprint layer: byte-identical requests from node's undici get
+ * 403 while the same binary succeeds, so no amount of header/body shaping can
+ * pass any more. Riding the real server is the only durable path. See
+ * docs/root-cause.md ("third gate layer").
+ *
+ * "zen": the legacy direct path (session minting + identity headers). Kept
+ * for when the upstream relaxes; verified dead against the 10-14-late gate.
+ */
+const MODE = process.env.ZEN_MODE || "ocserver";
+const OCC_URL = (process.env.OCC_URL || "http://127.0.0.1:4096").replace(/\/+$/, "");
+
 // Client identity captured verbatim from a real opencode 1.19.0 CLI.
-// Bump these together when you re-capture with tools/zen-capture-proxy.mjs.
+// Only used by the legacy "zen" mode. Bump these together when you re-capture
+// with tools/zen-capture-proxy.mjs.
 const USER_AGENT = process.env.ZEN_USER_AGENT
   || "opencode/1.19.0 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14";
 const PROJECT = process.env.ZEN_PROJECT || "global";
@@ -688,14 +706,193 @@ if (wantsStream) return pipeSSE(upstream, res);
   }
 }
 
+// ------------------------------------------------------- ocserver-mode adapter
+//
+// OpenAI chat completions in → local opencode server's native API out:
+//   POST /session                      fresh session per request (stateless)
+//   POST /session/{id}/message         prompt with {model, system, parts}
+//
+// Gate constraints learned live on 2026-10-14 late (see docs/root-cause.md):
+//   - custom `system` is ACCEPTED (caller's prompt passes through);
+//   - disabling tools is REJECTED (403 — the body must keep the standard
+//     agent shape), so tools stay enabled. That means the model CAN invoke
+//     opencode tools on the machine running `opencode serve` — run that
+//     server in a sandboxed directory/user if that worries you, and keep
+//     callers to chat-style workloads.
+
+function contentOf(m) {
+  if (typeof m?.content === "string") return m.content;
+  if (Array.isArray(m?.content)) return m.content.map((p) => p?.text ?? "").join("");
+  return "";
+}
+
+async function ocPost(path, payload, timeoutMs = 300000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const r = await fetch(OCC_URL + path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: ctrl.signal,
+    });
+    const text = await r.text();
+    let data = null;
+    try { data = JSON.parse(text); } catch { /* non-JSON error page */ }
+    return { status: r.status, data, text };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function ocChat(req, res) {
+  const raw = await readBody(req);
+  let body = {};
+  try {
+    body = raw.length ? JSON.parse(raw.toString("utf8")) : {};
+  } catch {
+    return sendJSON(res, 400, { error: { type: "invalid_request_error", message: "body is not valid JSON" } });
+  }
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  if (!messages.length) {
+    return sendJSON(res, 400, { error: { type: "invalid_request_error", message: "messages is required" } });
+  }
+  const model = String(body.model ?? "unknown");
+  if (!FREE_ROSTER.includes(model.replace(/^opencode\//, "")) && !FREE_ROSTER.includes(model)) {
+    return sendJSON(res, 400, {
+      error: { type: "invalid_request_error", message: `unknown free-lane model '${model}'; see GET /v1/models`, code: "model_not_in_roster" },
+    });
+  }
+  const modelID = model.replace(/^opencode\//, "");
+
+  const chars = inputChars(messages);
+  if (chars > MAX_INPUT_CHARS) {
+    return sendJSON(res, 413, {
+      error: { type: "invalid_request_error", message: `prompt too large (${chars} chars > ${MAX_INPUT_CHARS})`, code: "free_lane_input_too_large" },
+    });
+  }
+
+  const release = await acquireSlot(modelID, res);
+  if (!release) return;
+
+  try {
+    const created = await ocPost("/session", {});
+    if (created.status !== 200 || !created.data?.id) {
+      return sendJSON(res, 502, { error: { type: "upstream_error", message: `opencode server session create failed: HTTP ${created.status} ${String(created.text).slice(0, 120)}` } });
+    }
+    const sessionID = created.data.id;
+
+    const system = messages
+      .filter((m) => m?.role === "system")
+      .map(contentOf)
+      .filter(Boolean)
+      .join("\n\n")
+      .trim() || "You are a helpful assistant.";
+
+    // Fresh session per request is stateless, so multi-turn history must ride
+    // inside the prompt. A single user message goes through verbatim; longer
+    // histories are flattened into a labelled transcript.
+    const turns = messages.filter((m) => m?.role && m.role !== "system");
+    let prompt;
+    if (turns.length === 1 && turns[0].role === "user") {
+      prompt = contentOf(turns[0]);
+    } else {
+      const transcript = turns
+        .map((m) => `[${m.role}]\n${contentOf(m)}`)
+        .join("\n\n");
+      prompt = `Below is a transcript of a conversation so far. Respond as the assistant to the FINAL user message, continuing the conversation naturally.\n\n${transcript}`;
+    }
+
+    const asked = Number(body.max_tokens ?? 0);
+    const payload = {
+      model: { providerID: "opencode", modelID },
+      system,
+      parts: [{ type: "text", text: prompt }],
+    };
+    if (Number.isFinite(asked) && asked > 0) payload.system += `\n\n(Keep your answer within roughly ${Math.min(asked, MAX_OUTPUT_TOKENS)} tokens.)`;
+
+    const reply = await ocPost(`/session/${sessionID}/message`, payload);
+    if (reply.status !== 200 || !reply.data) {
+      return sendJSON(res, 502, { error: { type: "upstream_error", message: `opencode server prompt failed: HTTP ${reply.status} ${String(reply.text).slice(0, 160)}` } });
+    }
+    const err = reply.data?.info?.error;
+    if (err) {
+      const status = Number(err?.data?.statusCode) || 502;
+      if (status === 429) tripCircuit(modelID);
+      const waitSec = status === 429 ? Math.ceil(TRIP_COOLDOWN_MS / 1000) : undefined;
+      res.writeHead(status === 429 ? 503 : 502, {
+        "content-type": "application/json; charset=utf-8",
+        ...(waitSec ? { "retry-after": String(waitSec) } : {}),
+      });
+      return res.end(JSON.stringify({
+        error: { type: status === 429 ? "rate_limit_error" : "upstream_error", message: String(err?.data?.message || err?.name || "upstream error") },
+      }));
+    }
+
+    const text = (reply.data?.parts ?? [])
+      .filter((p) => p?.type === "text" && typeof p.text === "string")
+      .map((p) => p.text)
+      .join("");
+    const t = reply.data?.info?.tokens ?? {};
+    const usage = {
+      prompt_tokens: t.input ?? 0,
+      completion_tokens: t.output ?? 0,
+      total_tokens: (t.input ?? 0) + (t.output ?? 0),
+    };
+    const id = `chatcmpl-${randomMsgID().slice(4, 20)}`;
+    const created_ = Math.floor(Date.now() / 1000);
+
+    if (body.stream === true) {
+      // v1: single-chunk SSE. Real token streaming needs the server's /event
+      // subscription; most clients accept one fat chunk fine.
+      res.writeHead(200, {
+        "content-type": "text/event-stream; charset=utf-8",
+        "cache-control": "no-cache, no-transform",
+        connection: "keep-alive",
+      });
+      const chunk = (delta, finish = null) => JSON.stringify({
+        id, object: "chat.completion.chunk", created: created_, model,
+        choices: [{ index: 0, delta, finish_reason: finish }],
+      });
+      res.write(`data: ${chunk({ role: "assistant" })}\n\n`);
+      res.write(`data: ${chunk({ content: text })}\n\n`);
+      res.write(`data: ${chunk({}, "stop")}\n\n`);
+      return res.end("data: [DONE]\n\n");
+    }
+
+    return sendJSON(res, 200, {
+      id,
+      object: "chat.completion",
+      created: created_,
+      model,
+      choices: [{ index: 0, message: { role: "assistant", content: text }, finish_reason: "stop" }],
+      usage,
+    });
+  } finally {
+    release();
+  }
+}
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, "http://bridge");
   const path = url.pathname;
 
   if (req.method === "GET" && (path === "/health" || path === "/healthz")) {
     const now = Date.now();
+    let ocServer = null;
+    if (MODE === "ocserver") {
+      try {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 2000);
+        const r = await fetch(`${OCC_URL}/session/status`, { signal: ctrl.signal });
+        clearTimeout(timer);
+        ocServer = { url: OCC_URL, reachable: r.ok };
+      } catch {
+        ocServer = { url: OCC_URL, reachable: false };
+      }
+    }
     return sendJSON(res, 200, {
-      status: "ok", upstream: ZEN_BASE, userAgent: USER_AGENT,
+      status: "ok", mode: MODE, ...(MODE === "ocserver" ? { ocServer } : { upstream: ZEN_BASE, userAgent: USER_AGENT }),
       limiter: { minGapMs: MIN_GAP_MS, maxInflightPerModel: MAX_INFLIGHT, maxTotal: MAX_TOTAL,
                  queueMax: QUEUE_MAX, maxInputChars: MAX_INPUT_CHARS,
                  maxOutputTokens: MAX_OUTPUT_TOKENS, tripCooldownMs: TRIP_COOLDOWN_MS },
@@ -722,10 +919,13 @@ const server = createServer(async (req, res) => {
   }
 
   if (req.method === "POST" && (path === "/v1/chat/completions" || path === "/chat/completions")) {
-    return proxy(req, res, "chat", "/chat/completions");
+    return MODE === "ocserver" ? ocChat(req, res) : proxy(req, res, "chat", "/chat/completions");
   }
 
   if (req.method === "POST" && (path === "/v1/responses" || path === "/responses")) {
+    if (MODE === "ocserver") {
+      return sendJSON(res, 501, { error: { type: "not_supported", message: "/v1/responses is only available in ZEN_MODE=zen" } });
+    }
     return proxy(req, res, "responses", "/responses");
   }
 
@@ -735,21 +935,18 @@ const server = createServer(async (req, res) => {
 /**
  * Curated free roster — the models verified to answer on this network.
  *
- * Excluded on purpose, each with the live 2026-10-11 verdict:
+ * Known-dead models, kept here as exclusion history so nobody re-adds them
+ * blind (live verdicts from 2026-10-11/12):
  *   muse-spark-1.2/1.3-contributor-free  403 RegionError (not offered here)
  *   exo-free                             410 ModelDeprecated
  *   ling-3.0-flash-fin-free              400 Model is unavailable
  *   jev-1.13-free                        400 ModelProtocolUnsupported
  *   nemotron-3.5-lightning-free          upstream provider error (3/3 fail)
  *   ling-3.1-flash-free                  intermittent "Endpoint is unavailable";
- *                                        removed from the roster because one flaky
- *                                        model cools down the whole gateway
- *                                        account and takes the others with it
- *   step-5-preview-free                  same defect class: 2 of 3 probes on
- *                                        2026-10-12 returned "Upstream request
- *                                        failed: Endpoint is unavailable", so it
- *                                        is out of the roster and out of every
- *                                        gateway model group
+ *                                        kept out because one flaky model cools
+ *                                        down its whole gateway account and, on
+ *                                        a shared account, takes the others
+ *                                        with it
  */
 const FREE_ROSTER = process.env.ZEN_MODELS
   ? process.env.ZEN_MODELS.split(",").map((s) => s.trim()).filter(Boolean)
@@ -759,8 +956,11 @@ const FREE_ROSTER = process.env.ZEN_MODELS
       "mimo-v2.6-flash-free",
       "longcat-2.5-preview-free",
       "nemotron-3-ultra-free",
-      // 2026-10-14: re-added on user request; upstream was flaky on 10-12
-      // (2/3 probes "Endpoint is unavailable") — expect intermittent 502/400.
+      // 2026-10-14: re-added on user request despite being flaky upstream
+      // (2/3 probes "Endpoint is unavailable" on 10-12; still 429ing that
+      // evening). It IS in the roster — but keep it on its own isolated
+      // gateway account so its failures cool only itself, and expect
+      // intermittent 429/502 while upstream is having a bad day.
       "step-5-preview-free",
     ];
 

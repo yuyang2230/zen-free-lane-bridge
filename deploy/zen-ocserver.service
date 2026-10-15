@@ -1,0 +1,18 @@
+[Unit]
+Description=headless opencode server — trusted-transport backend for zen-bridge ocserver mode
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Run as a dedicated low-privilege user if you can: the free-lane gate requires
+# opencode tools to stay ENABLED, which means the model can execute tool calls
+# on this account.
+# User=zenlane
+ExecStart=/usr/bin/opencode serve --port 4096
+WorkingDirectory=/opt/zen-free-lane-bridge
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

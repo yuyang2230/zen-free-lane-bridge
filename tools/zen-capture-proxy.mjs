@@ -17,12 +17,12 @@
  *                                      not doubled)
  */
 import { createServer } from "node:http";
-import { appendFileSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { appendFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
-const ZEN_ORIGIN = "https://opencode.ai";
-const OUT = new URL("./zen-capture-log.jsonl", import.meta.url).pathname.slice(1);
-const PORT = 8810;
+const ZEN_ORIGIN = process.env.ZEN_ORIGIN || "https://opencode.ai";
+const OUT = fileURLToPath(new URL("./zen-capture-log.jsonl", import.meta.url));
+const PORT = Number(process.env.PORT || 8810);
 
 function targetPath(reqUrl) {
   if (reqUrl.startsWith("/zen")) return reqUrl;

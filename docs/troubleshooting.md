@@ -90,13 +90,17 @@ curl -s http://127.0.0.1:8799/v1/chat/completions -H 'Content-Type: application/
 
 **确认**：属于门禁问题，按上文「网关返回 403」处理。
 
-**自查计数器窗口**（若你改过 id 生成逻辑）：
+**自查计数器窗口**（若你改过 id 生成逻辑）。填入**真实会话 id**（形如
+`ses_` + 12 位 hex + 14 位 base62，共 30 字符；可从抓包日志或桥日志里拿）：
+
 ```bash
 node -e '
-const ses = "ses_xxxxxxxxxxxx000000000000";     // 填入实际使用的 12 位 hex
-const f = BigInt("0x" + ses.slice(4,16));
-console.log("counter =", ((~f) & 281474976710655n & 4095n).toString(), "(必须在 0..63)");
-'
+const ses = process.argv[1];                    // 例如 ses_ec6066bcfffeqgMqkTnQ61WNq1
+if (!/^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/.test(ses)) { console.log("不是规范形状"); process.exit(1); }
+const f = BigInt("0x" + ses.slice(4, 16));      // 12 位 hex 字段
+const counter = Number((~f) & 281474976710655n & 4095n);
+console.log("counter =", counter, "(必须在 0..63 才能过门禁)");
+' ses_ec6066bcfffeqgMqkTnQ61WNq1
 ```
 
 ---
@@ -136,7 +140,8 @@ opencode run -m opencode/<某个免费模型> "reply with exactly: pong"
 
 > 抓包后**务必还原** opencode 配置。
 
-用 `tools/zen-replay-probe.mjs` 可以在不改动生产桥的前提下验证新配方是否被放行。
+用 `tools/zen-replay-probe.mjs` 可以在不改动生产桥的前提下验证新配方是否被放行
+（需先用 `tools/zen-capture-proxy.mjs` 抓一次真实请求；工具缺抓包文件时会打印操作步骤）。
 
 ---
 
@@ -145,3 +150,40 @@ opencode run -m opencode/<某个免费模型> "reply with exactly: pong"
 - **端口占用**：`netstat -ano | findstr 8799`，换 `PORT=8800`。
 - **Node 版本**：需 18+（用到内置 fetch）。
 - **想看启动日志**：`bash bridge/start-bridge.sh` 前台跑，或看 `bridge.log`。
+
+---
+
+## ocserver 模式（当前默认）
+
+### `/health` 里 `ocServer.reachable: false`
+
+**病因**：`opencode serve` 没起或端口不对。
+
+**处理**：先起后端（`deploy/start-ocserver.cmd|sh`，默认 4096），或把 `OCC_URL` 指到实际地址。
+
+---
+
+### 一切请求 502，错误信息带 FreeTierError
+
+**病因**：opencode server 对上游的请求也被 403 了——通常意味着门禁又变了
+（例如 body 层新增校验），或 opencode CLI 版本更新改变了请求形状。
+
+**处理**：升级 opencode CLI 后重试；仍失败则按 root-cause.md 的隔离梯子重新定位，
+必要时重抓请求（`tools/zen-capture-proxy.mjs`）。
+
+---
+
+### 模型回复带 opencode CLI 口吻（"我来运行命令"之类）
+
+**病因**：门禁要求 opencode 工具保持启用，模型自带 agent 人格；未传 system 时桥
+只注入一句默认提示词。
+
+**处理**：在请求里带上你自己的 system（透传是支持的），明确"直接回答，不要使用工具"。
+这是当前门禁下的结构性限制，无法完全消除。
+
+---
+
+### 请求后机器上出现了工具执行痕迹
+
+**严重**：门禁强制工具启用，模型真的可以执行 opencode 工具（bash 等）。
+确认 `opencode serve` 跑在低权限/专用目录/容器里，并检查调用方是否可信。

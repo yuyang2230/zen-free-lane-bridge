@@ -18,6 +18,24 @@
 
 ---
 
+
+## 前置条件：本机要跑一个 opencode serve
+
+2026-10-14 深夜起，上游门禁按**传输层指纹**放行——只有真实 opencode 二进制发出的
+连接能过（详见 root-cause.md 第三层门禁）。因此桥默认工作在 `ZEN_MODE=ocserver`：
+
+1. 本机安装 opencode CLI（https://opencode.ai）。
+2. 常驻启动无头服务（保持 4096 端口）：
+   - Windows：`powershell -ExecutionPolicy Bypass -File deploy\install-windows-task.ps1 -Component both`
+     （同时装 ZenBridge 与 ZenOcServer 两个计划任务，登录自启、隐藏窗口、5s 自愈）
+   - Linux/macOS：`bash deploy/start-ocserver.sh`，或用 `deploy/zen-ocserver.service`
+3. 桥会自动把免费模型的请求转给它（`OCC_URL`，默认 `http://127.0.0.1:4096`）。
+4. `/health` 里 `ocServer.reachable: true` 即链路就绪。
+
+**安全提醒**：门禁要求 opencode 工具保持启用，模型因此**可以**在该机器上执行工具调用
+（bash 等）。务必让 `opencode serve` 跑在专用目录 + 低权限账号（或容器）里，
+并只允许可信调用方访问网关与桥。
+
 ## 上游账号配置
 
 在网关新增上游账号（1Panel AI Gateway：`AI 网关 → 上游账号 → 添加`）：

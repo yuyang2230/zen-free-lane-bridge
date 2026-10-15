@@ -3,22 +3,47 @@
  * zen-replay-probe — find the minimal body shape the free-lane gate accepts.
  *
  * Reads capture index [1] (the real opencode build-agent request) from
- * zen-capture-log.jsonl and replays three shapes against the live endpoint:
- *   full     — verbatim body (43k system + 11 tools + tool_choice auto)
- *   smallsys — plain tiny system + the verbatim 11 tools + tool_choice auto
- *   notools  — plain tiny system, no tools
+ * zen-capture-log.jsonl and replays shapes against the live endpoint:
+ *   full       — verbatim body (big system + full toolset + tool_choice auto)
+ *   smallsys   — plain tiny system + the captured toolset + tool_choice auto
+ *   two-tool   — tiny system + two inert stub tools (bash/read)
+ *   nosec2tool — no system, two stub tools
+ *   notools    — tiny system, no tools (expected: 403 — tools are the gate)
  *
- * All three use the VERBATIM identity headers from the capture.
- * Usage: node zen-replay-probe.mjs [full|smallsys|notools]
+ * All shapes reuse the VERBATIM identity headers from the capture, so the
+ * only variable between runs is the body — that is the point.
+ *
+ * Prerequisite: a capture produced by zen-capture-proxy.mjs (see that file's
+ * header). This tool is a diagnostic, not part of the running bridge.
+ *
+ * Usage: node zen-replay-probe.mjs [full|smallsys|two-tool|nosec2tool|notools]
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
-const LOG = new URL("./zen-capture-log.jsonl", import.meta.url).pathname.slice(1);
+const LOG = fileURLToPath(new URL("./zen-capture-log.jsonl", import.meta.url));
 const MODE = process.argv[2] || "full";
 const MODEL = "space-bunny-free";
-const ZEN = "https://opencode.ai/zen/v1/chat/completions";
+const ZEN = process.env.ZEN_BASE || "https://opencode.ai/zen/v1/chat/completions";
 
-const caps = readFileSync(LOG, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+if (!existsSync(LOG)) {
+  console.error(`no capture at ${LOG}`);
+  console.error("produce one first:");
+  console.error("  1. node tools/zen-capture-proxy.mjs          (listens on 127.0.0.1:8810)");
+  console.error("  2. point opencode's built-in 'opencode' provider at http://127.0.0.1:8810");
+  console.error("     (provider.opencode.options.baseURL in ~/.config/opencode/opencode.json)");
+  console.error("  3. opencode run -m opencode/<free-model> \"reply with exactly: pong\"");
+  console.error("  4. restore the opencode config, then re-run this probe");
+  process.exit(1);
+}
+
+const caps = readFileSync(LOG, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+if (caps.length < 2) {
+  console.error(`capture has ${caps.length} request(s); need at least 2 — the gate analysis`);
+  console.error("compares the small title-generator request [0] against the main agent");
+  console.error("request [1]. Run one more opencode prompt and retry.");
+  process.exit(1);
+}
 const cap = caps[1];
 const fullBody = JSON.parse(cap.body);
 const verbatimHeaders = {

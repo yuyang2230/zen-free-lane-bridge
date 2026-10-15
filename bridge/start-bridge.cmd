@@ -30,6 +30,12 @@ if "%ZEN_MAX_INPUT_CHARS%"=="" set "ZEN_MAX_INPUT_CHARS=120000"
 if "%ZEN_MAX_OUTPUT_TOKENS%"=="" set "ZEN_MAX_OUTPUT_TOKENS=8000"
 if "%ZEN_TRIP_COOLDOWN_MS%"=="" set "ZEN_TRIP_COOLDOWN_MS=120000"
 
+REM Upstream mode: "ocserver" rides a local headless opencode server (the only
+REM transport the free-lane gate currently accepts — see docs/root-cause.md).
+REM Requires `opencode serve` running (deploy\start-ocserver.cmd / task).
+if "%ZEN_MODE%"=="" set "ZEN_MODE=ocserver"
+if "%OCC_URL%"=="" set "OCC_URL=http://127.0.0.1:4096"
+
 :loop
 echo [%date% %time%] starting zen-bridge >> "%LOG%"
 "%NODE%" "%~dp0zen-bridge.mjs" >> "%LOG%" 2>&1

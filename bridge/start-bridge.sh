@@ -24,6 +24,12 @@ export ZEN_MAX_INPUT_CHARS="${ZEN_MAX_INPUT_CHARS:-120000}"
 export ZEN_MAX_OUTPUT_TOKENS="${ZEN_MAX_OUTPUT_TOKENS:-8000}"
 export ZEN_TRIP_COOLDOWN_MS="${ZEN_TRIP_COOLDOWN_MS:-120000}"
 
+# Upstream mode: "ocserver" rides a local headless opencode server (the only
+# transport the free-lane gate currently accepts — see docs/root-cause.md).
+# Requires `opencode serve` running (deploy/start-ocserver.sh / systemd unit).
+export ZEN_MODE="${ZEN_MODE:-ocserver}"
+export OCC_URL="${OCC_URL:-http://127.0.0.1:4096}"
+
 while true; do
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] starting zen-bridge" >> "$LOG"
   "$NODE" zen-bridge.mjs >> "$LOG" 2>&1

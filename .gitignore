@@ -1,6 +1,8 @@
 # runtime state
 bridge.log
 zen-bridge.log
+ocserver.log
+zen-ocserver.log
 zen-capture-log.jsonl
 zen-white-sessions.json
 
