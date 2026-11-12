@@ -1,0 +1,56 @@
+name: 🐛 Bug 反馈
+description: 桥接异常、免费模型仍被拒、部署失败
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。提交前请先 `git pull` 拉最新代码并重试一次。
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 发生了什么？请把报错原文（状态码 / FreeTierError 等）完整贴出来
+      placeholder: 例如：接入 1Panel 网关后请求 space-bunny-free 返回 403 ...
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 启动命令：node zen-bridge.js ...
+        2. 网关 Base URL 配置：...
+        3. 客户端请求的 model 名称：...
+    validations:
+      required: true
+  - type: dropdown
+    id: gateway
+    attributes:
+      label: 接入的网关 / 客户端
+      options:
+        - 1Panel AI 网关
+        - LobeChat / NextChat
+        - Dify
+        - OpenCode / 其它 Agent 框架
+        - 其它（请在描述中说明）
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: 桥版本 / commit
+      description: git log -1 --oneline 的输出即可
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: 运行环境
+      placeholder: 例：Windows 11 / Node v22；Ubuntu 24.04 / Node v20
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志
+      description: 桥的 stdout / 网关请求日志，会自动渲染为代码块
+      render: shell
