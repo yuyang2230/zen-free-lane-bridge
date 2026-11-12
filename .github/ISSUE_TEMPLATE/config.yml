@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 📖 部署与原理先看 README
+    url: https://github.com/yuyang2230/zen-free-lane-bridge#readme
+    about: 多数"故障"是没按文档配置，请先对照 README 检查
